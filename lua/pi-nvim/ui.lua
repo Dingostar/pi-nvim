@@ -37,6 +37,7 @@ function M.open(opts)
   local rel_file = vim.fn.expand("%:.")
   local ft = vim.bo.filetype
   local send_buffer = false
+  local include_lsp = pi.config.include_lsp or false
   local source_buf = vim.api.nvim_get_current_buf()
   local buf_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
 
@@ -52,7 +53,7 @@ function M.open(opts)
 
   -- Layout
   local width = math.min(72, math.floor(vim.o.columns * 0.5))
-  local info_height = 2
+  local info_height = 3
   local max_input_height = 6
   local gap = 0 -- no gap between bubbles
   local top_row = math.floor((vim.o.lines - (info_height + 2 + gap + max_input_height + 2)) / 2)
@@ -72,6 +73,7 @@ function M.open(opts)
   vim.api.nvim_buf_set_lines(info_buf, 0, -1, false, {
     " " .. file_info,
     " " .. context_info,
+    " LSP diag: " .. (include_lsp and "[x]" or "[ ]") .. " (S-Tab)",
   })
   vim.bo[info_buf].modifiable = false
 
@@ -164,11 +166,12 @@ function M.open(opts)
   end
 
   local function update_context()
-    if selection then return end
-    local marker = send_buffer and "[x]" or "[ ]"
-    local line = " Send buffer: " .. marker .. " (Tab to toggle)"
+    local sel_line = selection
+        and string.format(" Selection: %d lines (%d-%d)", select(2, selection.text:gsub("\n", "")) + 1, selection.start_line, selection.end_line)
+        or string.format(" Send buffer: %s (Tab)", send_buffer and "[x]" or "[ ]")
+    local lsp_line = string.format(" LSP diag: %s (S-Tab)", include_lsp and "[x]" or "[ ]")
     vim.bo[info_buf].modifiable = true
-    vim.api.nvim_buf_set_lines(info_buf, 1, 2, false, { line })
+    vim.api.nvim_buf_set_lines(info_buf, 1, 3, false, { sel_line, lsp_line })
     vim.bo[info_buf].modifiable = false
   end
 
@@ -177,6 +180,7 @@ function M.open(opts)
     local prompt_text = vim.fn.trim(table.concat(lines, "\n"))
     close()
 
+    -- Build the base message
     local message
     if selection then
       local header = string.format("%s lines %d-%d", selection.file, selection.start_line, selection.end_line)
@@ -206,6 +210,25 @@ function M.open(opts)
       message = prompt_text
     end
 
+    -- Append LSP diagnostics if toggled
+    if include_lsp then
+      local lsp_opts = { buf = source_buf }
+      if selection then
+        lsp_opts.start = selection.start_line
+        lsp_opts["end"] = selection.end_line
+      end
+      local diag = pi.lsp_diagnostics and pi.lsp_diagnostics(lsp_opts)
+      if diag and diag ~= "" then
+        message = message .. "\n\n" .. diag
+      end
+      -- Temporarily disable the wrapper so it doesn't double-inject
+      local saved = pi.config.include_lsp
+      pi.config.include_lsp = false
+      pi.prompt(message)
+      pi.config.include_lsp = saved
+      return
+    end
+
     pi.prompt(message)
   end
 
@@ -219,6 +242,16 @@ function M.open(opts)
       send_buffer = not send_buffer
       update_context()
     end
+  end, kopts)
+  vim.keymap.set("n", "<S-Tab>", function()
+    include_lsp = not include_lsp
+    pi.config.include_lsp = include_lsp
+    update_context()
+  end, kopts)
+  vim.keymap.set("i", "<S-Tab>", function()
+    include_lsp = not include_lsp
+    pi.config.include_lsp = include_lsp
+    update_context()
   end, kopts)
 
   -- Resize window as text is typed
