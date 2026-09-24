@@ -41,13 +41,13 @@ local function make_context_lines(state)
       state.selection.end_line
     )
   else
-    sel_line = string.format(" Send buffer: %s", state.send_buffer and "[x]" or "[ ]")
+    sel_line = string.format(" Send buffer: %s (<Tab>)", state.send_buffer and "[x]" or "[ ]")
   end
 
   return {
     " " .. state.file_info,
     sel_line,
-    string.format(" LSP diag: %s", state.include_lsp and "[x]" or "[ ]"),
+    string.format(" LSP diag: %s (<S-Tab>)", state.include_lsp and "[x]" or "[ ]"),
   }
 end
 
