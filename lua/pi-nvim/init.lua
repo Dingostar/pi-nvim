@@ -3,13 +3,17 @@ local M = {}
 --- @class pi_nvim.Config
 --- @field socket_path string|nil  Override socket path (default: auto-discover)
 --- @field set_default_keymaps boolean|nil  Whether to create the default <leader>p mappings (default: true)
+--- @field include_lsp boolean  Whether to append LSP diagnostics to prompts (default: false)
 M.config = {
   socket_path = nil,
   set_default_keymaps = true,
+  include_lsp = false,
 }
 
 --- @param opts pi_nvim.Config|nil
 function M.setup(opts)
+  -- M.lsp_diagnostics is available for users/UI to call with a range;
+  -- M.prompt() auto-injects it when config.include_lsp is true.
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
   -- Auto-reload buffers when files are changed externally (e.g. by pi agent).
@@ -188,9 +192,65 @@ function M.send_raw(msg, cb)
   end)
 end
 
+--- Collect LSP diagnostics for a buffer (optionally filtered to a range).
+--- @param opts? {start: number, ["end"]: number, buf: number} optional range + buffer handle
+--- @return string formatted diagnostics text (empty if none)
+function M.lsp_diagnostics(opts)
+  opts = opts or {}
+  local buf = opts.buf or vim.api.nvim_get_current_buf()
+  local diagnostics = vim.diagnostic.get(buf)
+  if #diagnostics == 0 then
+    return ""
+  end
+
+  -- Filter to range if provided (e.g. visual selection)
+  if opts and opts.start then
+    local filtered = {}
+    for _, d in ipairs(diagnostics) do
+      local lnum = d.lnum + 1
+      if lnum >= opts.start and lnum <= opts["end"] then
+        table.insert(filtered, d)
+      end
+    end
+    diagnostics = filtered
+    if #diagnostics == 0 then
+      return ""
+    end
+  end
+
+  -- Group by severity: Error > Warning > Info > Hint
+  local order = { ["error"] = 1, ["warning"] = 2, ["info"] = 3, ["hint"] = 4 }
+  table.sort(diagnostics, function(a, b)
+    local sa = order[a.severity] or 9
+    local sb = order[b.severity] or 9
+    if sa ~= sb then
+      return sa < sb
+    end
+    return a.lnum < b.lnum
+  end)
+
+  local lines = { "" }
+  local labels = { "ERROR", "WARN", "INFO", "HINT" }
+  for _, d in ipairs(diagnostics) do
+    local lnum = d.lnum + 1
+    local label = labels[d.severity] or "DIAG"
+    lines[#lines + 1] = string.format("  %s:%d [%s] %s", vim.fn.expand("%:"), lnum, label, d.message)
+  end
+  lines[1] = "LSP diagnostics:"
+  return table.concat(lines, "\n")
+end
+
 --- Send a prompt string to pi.
+--- If config.include_lsp is true, appends LSP diagnostics to the message.
 --- @param message string|nil  If nil, prompts the user for input
 function M.prompt(message)
+  if message and M.config.include_lsp then
+    local diag = M.lsp_diagnostics()
+    if diag ~= "" then
+      message = message .. "\n\n" .. diag
+    end
+  end
+
   if message then
     M.send_raw({ type = "prompt", message = message }, function(err, resp)
       if err then return end
