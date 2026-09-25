@@ -1,5 +1,18 @@
 local M = {}
 
+-- Stable namespace for the source-buffer selection highlight, so a highlight
+-- leaked by an earlier dialog can always be found and cleared again.
+local SELECTION_NS = vim.api.nvim_create_namespace("pi_nvim_selection")
+
+--- Drop any selection highlight this plugin left behind, in every loaded buffer.
+local function clear_all_selection_highlights()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) then
+      pcall(vim.api.nvim_buf_clear_namespace, buf, SELECTION_NS, 0, -1)
+    end
+  end
+end
+
 --- Capture visual selection info before it's lost.
 --- @return table|nil
 function M.capture_selection()
@@ -164,9 +177,9 @@ function M.open(opts)
   end
 
   local function clear_selection_highlight()
-    if state.sel_ns and vim.api.nvim_buf_is_valid(state.source_buf) then
-      vim.api.nvim_buf_clear_namespace(state.source_buf, state.sel_ns, 0, -1)
-      state.sel_ns = nil
+    if state.highlighted and vim.api.nvim_buf_is_valid(state.source_buf) then
+      vim.api.nvim_buf_clear_namespace(state.source_buf, SELECTION_NS, 0, -1)
+      state.highlighted = false
     end
   end
 
@@ -314,6 +327,11 @@ function M.open(opts)
     state.mode = "split"
     close_float()
 
+    -- The split shows the selected code verbatim, so the source-buffer
+    -- highlight is redundant here — and the split is a window you can navigate
+    -- away from while the dialog stays open, which would leave it stranded.
+    clear_selection_highlight()
+
     vim.cmd("botright 15split")
     state.split_win = vim.api.nvim_get_current_win()
     state.input_buf = create_prompt_buf(initial_lines)
@@ -325,6 +343,19 @@ function M.open(opts)
     vim.wo[state.split_win].foldcolumn = "0"
 
     attach_prompt_keymaps(state.input_buf)
+
+    -- The split can be dismissed without ever going through send()/close_all()
+    -- (:q, <C-w>c, or navigating away — the buffer is bufhidden=wipe), so tear
+    -- the dialog down here too. Otherwise the selection highlight is orphaned
+    -- in the source buffer. close_all() is re-entrant via state.closed.
+    vim.api.nvim_create_autocmd({ "BufWipeout", "BufUnload" }, {
+      buffer = state.input_buf,
+      once = true,
+      callback = function()
+        vim.schedule(close_all)
+      end,
+    })
+
     update_context()
     if cursor_head then
       place_cursor(state.split_win, cursor_head)
@@ -333,10 +364,12 @@ function M.open(opts)
   end
 
   -- Highlight the visual selection in the source buffer while the dialog is open.
+  -- Sweep first: if an earlier dialog leaked a highlight, drop it now.
+  clear_all_selection_highlights()
   if state.selection and vim.api.nvim_buf_is_valid(state.source_buf) then
-    state.sel_ns = vim.api.nvim_create_namespace("pi_nvim_selection")
+    state.highlighted = true
     for lnum = state.selection.start_line, state.selection.end_line do
-      vim.api.nvim_buf_add_highlight(state.source_buf, state.sel_ns, "Visual", lnum - 1, 0, -1)
+      vim.api.nvim_buf_add_highlight(state.source_buf, SELECTION_NS, "Visual", lnum - 1, 0, -1)
     end
   end
 
