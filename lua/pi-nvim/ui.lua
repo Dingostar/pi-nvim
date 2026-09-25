@@ -44,7 +44,9 @@ local function selection_line_count(selection)
   return select(2, selection.text:gsub("\n", "")) + 1
 end
 
-local function make_context_lines(state)
+--- @param show_keys boolean  Include the toggle key hints. Only the float can
+---   toggle, so the split's winbar renders the same state without them.
+local function make_context_lines(state, show_keys)
   local sel_line
   if state.selection then
     sel_line = string.format(
@@ -54,13 +56,21 @@ local function make_context_lines(state)
       state.selection.end_line
     )
   else
-    sel_line = string.format(" Send buffer: %s (<Tab>)", state.send_buffer and "[x]" or "[ ]")
+    sel_line = string.format(
+      " Send buffer: %s%s",
+      state.send_buffer and "[x]" or "[ ]",
+      show_keys and " (<Tab>)" or ""
+    )
   end
 
   return {
     " " .. state.file_info,
     sel_line,
-    string.format(" LSP diag: %s (<S-Tab>)", state.include_lsp and "[x]" or "[ ]"),
+    string.format(
+      " LSP diag: %s%s",
+      state.include_lsp and "[x]" or "[ ]",
+      show_keys and " (<S-Tab>)" or ""
+    ),
   }
 end
 
@@ -163,16 +173,13 @@ function M.open(opts)
   local function update_context()
     if state.info_buf and vim.api.nvim_buf_is_valid(state.info_buf) then
       vim.bo[state.info_buf].modifiable = true
-      vim.api.nvim_buf_set_lines(state.info_buf, 0, -1, false, make_context_lines(state))
+      vim.api.nvim_buf_set_lines(state.info_buf, 0, -1, false, make_context_lines(state, true))
       vim.bo[state.info_buf].modifiable = false
     end
 
     if state.split_win and vim.api.nvim_win_is_valid(state.split_win) then
-      local ctx = make_context_lines(state)
-      local hint = state.selection
-          and " | <C-s> send as shown | <leader>pl LSP"
-          or " | <C-s> send as shown | <leader>pb buffer | <leader>pl LSP"
-      vim.wo[state.split_win].winbar = table.concat(ctx, " ") .. hint
+      local ctx = make_context_lines(state, false)
+      vim.wo[state.split_win].winbar = table.concat(ctx, " ") .. " | <C-s> send as shown"
     end
   end
 
@@ -311,13 +318,14 @@ function M.open(opts)
     local kopts = { buffer = buf, noremap = true, silent = true }
 
     vim.keymap.set({ "i", "n" }, "<C-s>", send, kopts)
-    vim.keymap.set({ "i", "n" }, "<leader>pb", toggle_buffer, kopts)
-    vim.keymap.set({ "i", "n" }, "<leader>pl", toggle_lsp, kopts)
 
     if opts2.float then
       vim.keymap.set("i", "<CR>", send, kopts)
       vim.keymap.set({ "i", "n" }, "<Esc>", close_all, kopts)
       vim.keymap.set({ "i", "n" }, "<C-c>", close_all, kopts)
+      -- The context toggles exist only in the float. Once <C-e> expands the
+      -- dialog the split buffer *is* the message and is sent verbatim, so a
+      -- toggle there would have to re-derive text the user may have edited.
       vim.keymap.set({ "i", "n" }, "<Tab>", toggle_buffer, kopts)
       vim.keymap.set({ "i", "n" }, "<S-Tab>", toggle_lsp, kopts)
     end
@@ -388,7 +396,7 @@ function M.open(opts)
   state.info_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[state.info_buf].buftype = "nofile"
   vim.bo[state.info_buf].bufhidden = "wipe"
-  vim.api.nvim_buf_set_lines(state.info_buf, 0, -1, false, make_context_lines(state))
+  vim.api.nvim_buf_set_lines(state.info_buf, 0, -1, false, make_context_lines(state, true))
   vim.bo[state.info_buf].modifiable = false
 
   state.info_win = vim.api.nvim_open_win(state.info_buf, false, {
