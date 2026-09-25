@@ -51,6 +51,69 @@ local function make_context_lines(state)
   }
 end
 
+--- Collect LSP diagnostics for the dialog's source buffer (scoped to the selection, if any).
+--- @return string|nil
+local function lsp_section(state)
+  if not state.include_lsp then return nil end
+  local pi = require("pi-nvim")
+  if not pi.lsp_diagnostics then return nil end
+
+  local opts = { buf = state.source_buf }
+  if state.selection then
+    opts.start = state.selection.start_line
+    opts["end"] = state.selection.end_line
+  end
+  local diag = pi.lsp_diagnostics(opts)
+  if diag and diag ~= "" then return diag end
+  return nil
+end
+
+--- Build the parts that wrap the typed prompt, so the full message is always
+--- `prefix .. prompt .. suffix`. Returns nil when there is nothing to send.
+--- @return {prefix: string, suffix: string}|nil
+local function build_frame(state, has_prompt)
+  local prefix, suffix = "", ""
+
+  if state.selection then
+    local sel = state.selection
+    local header = string.format("%s lines %d-%d", sel.file, sel.start_line, sel.end_line)
+    if has_prompt then
+      suffix = string.format("\n\nFrom %s:\n```%s\n%s\n```", header, sel.ft, sel.text)
+    else
+      prefix = string.format("Look at this code from %s:\n\n```%s\n%s\n```", header, sel.ft, sel.text)
+    end
+  elseif state.send_buffer and state.rel_file ~= "" then
+    local content = table.concat(state.buf_lines, "\n")
+    if has_prompt then
+      suffix = string.format("\n\nFile: %s\n```%s\n%s\n```", state.rel_file, state.ft, content)
+    else
+      prefix = string.format("Look at this file %s:\n\n```%s\n%s\n```", state.rel_file, state.ft, content)
+    end
+  elseif state.file ~= "" then
+    if has_prompt then
+      prefix = string.format("File: %s\n\n", state.file)
+    else
+      prefix = string.format("Look at this file: %s", state.file)
+    end
+  elseif not has_prompt then
+    return nil
+  end
+
+  local diag = lsp_section(state)
+  if diag then
+    suffix = suffix .. "\n\n" .. diag
+  end
+
+  return { prefix = prefix, suffix = suffix }
+end
+
+--- @return string|nil message, {prefix: string, suffix: string}|nil frame
+local function build_message(state, prompt_text)
+  local frame = build_frame(state, prompt_text ~= "")
+  if not frame then return nil, nil end
+  return frame.prefix .. prompt_text .. frame.suffix, frame
+end
+
 local function create_prompt_buf(lines)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
@@ -61,7 +124,10 @@ local function create_prompt_buf(lines)
   return buf
 end
 
---- Open the Pi send dialog as a floating prompt, with <C-e> to expand into a split.
+--- Open the Pi send dialog as a floating prompt.
+--- <C-e> expands it into a split containing the complete message that will be
+--- sent to pi — prompt, selection/buffer code block and LSP diagnostics — which
+--- is then sent verbatim, exactly as shown.
 --- @param opts { selection: table|nil }|nil
 function M.open(opts)
   opts = opts or {}
@@ -91,8 +157,8 @@ function M.open(opts)
     if state.split_win and vim.api.nvim_win_is_valid(state.split_win) then
       local ctx = make_context_lines(state)
       local hint = state.selection
-          and " | <C-s> send | <leader>pl LSP"
-          or " | <C-s> send | <leader>pb buffer | <leader>pl LSP"
+          and " | <C-s> send as shown | <leader>pl LSP"
+          or " | <C-s> send as shown | <leader>pb buffer | <leader>pl LSP"
       vim.wo[state.split_win].winbar = table.concat(ctx, " ") .. hint
     end
   end
@@ -142,72 +208,89 @@ function M.open(opts)
     return vim.fn.trim(table.concat(lines, "\n"))
   end
 
-  local function send()
-    local prompt_text = get_prompt_text()
-    close_all()
+  -- This dialog already embeds diagnostics itself, so suppress pi.prompt()'s
+  -- auto-injection to avoid sending them twice.
+  local function deliver(message)
+    local saved = pi.config.include_lsp
+    pi.config.include_lsp = false
+    pi.prompt(message)
+    pi.config.include_lsp = saved
+  end
 
+  local function send()
     local message
-    if state.selection then
-      local header = string.format("%s lines %d-%d", state.selection.file, state.selection.start_line, state.selection.end_line)
-      if prompt_text == "" then
-        message = string.format("Look at this code from %s:\n\n```%s\n%s\n```", header, state.selection.ft, state.selection.text)
-      else
-        message = string.format("%s\n\nFrom %s:\n```%s\n%s\n```", prompt_text, header, state.selection.ft, state.selection.text)
-      end
-    elseif state.send_buffer and state.rel_file ~= "" then
-      local content = table.concat(state.buf_lines, "\n")
-      if prompt_text == "" then
-        message = string.format("Look at this file %s:\n\n```%s\n%s\n```", state.rel_file, state.ft, content)
-      else
-        message = string.format("%s\n\nFile: %s\n```%s\n%s\n```", prompt_text, state.rel_file, state.ft, content)
-      end
-    elseif state.file ~= "" then
-      if prompt_text == "" then
-        message = string.format("Look at this file: %s", state.file)
-      else
-        message = string.format("File: %s\n\n%s", state.file, prompt_text)
-      end
+    if state.expanded then
+      -- The expanded buffer *is* the message: send it exactly as shown.
+      message = get_prompt_text()
     else
-      if prompt_text == "" then
-        vim.notify("Nothing to send", vim.log.levels.WARN)
-        return
-      end
-      message = prompt_text
+      message = build_message(state, get_prompt_text())
     end
 
-    if state.include_lsp then
-      local lsp_opts = { buf = state.source_buf }
-      if state.selection then
-        lsp_opts.start = state.selection.start_line
-        lsp_opts["end"] = state.selection.end_line
-      end
-      local diag = pi.lsp_diagnostics and pi.lsp_diagnostics(lsp_opts)
-      if diag and diag ~= "" then
-        message = message .. "\n\n" .. diag
-      end
-      local saved = pi.config.include_lsp
-      pi.config.include_lsp = false
-      pi.prompt(message)
-      pi.config.include_lsp = saved
+    if not message or message == "" then
+      close_all()
+      vim.notify("Nothing to send", vim.log.levels.WARN)
       return
     end
 
-    pi.prompt(message)
+    close_all()
+    deliver(message)
+  end
+
+  --- Put the cursor at the end of the prompt portion of the expanded buffer.
+  local function place_cursor(win, head)
+    if not win or not vim.api.nvim_win_is_valid(win) then return end
+    local head_lines = vim.split(head, "\n", { plain = true })
+    local lnum = #head_lines
+    vim.api.nvim_win_set_cursor(win, { lnum, #head_lines[lnum] })
+  end
+
+  --- Redraw the expanded buffer after a context toggle, keeping whatever the
+  --- user typed. Returns false if the generated context was hand-edited, in
+  --- which case the buffer is left untouched.
+  local function rerender_expanded()
+    if not state.input_buf or not vim.api.nvim_buf_is_valid(state.input_buf) then return false end
+
+    local text = table.concat(vim.api.nvim_buf_get_lines(state.input_buf, 0, -1, false), "\n")
+    local old = state.frame or { prefix = "", suffix = "" }
+    if not (vim.startswith(text, old.prefix) and vim.endswith(text, old.suffix)) then
+      return false
+    end
+    if #text < #old.prefix + #old.suffix then
+      return false
+    end
+
+    local prompt_text = text:sub(#old.prefix + 1, #text - #old.suffix)
+    local frame = build_frame(state, true)
+    state.frame = frame
+
+    local head = frame.prefix .. prompt_text
+    vim.api.nvim_buf_set_lines(state.input_buf, 0, -1, false,
+      vim.split(head .. frame.suffix, "\n", { plain = true }))
+    place_cursor(state.split_win, head)
+    return true
+  end
+
+  local function refresh_after_toggle(what, enabled)
+    update_context()
+    local edited = state.expanded and not rerender_expanded()
+    vim.notify(
+      string.format("Pi %s: %s", what, enabled and "on" or "off")
+        .. (edited and " (message was edited by hand — sending as shown)" or ""),
+      edited and vim.log.levels.WARN or vim.log.levels.INFO
+    )
   end
 
   local function toggle_buffer()
     if not state.selection then
       state.send_buffer = not state.send_buffer
-      update_context()
-      vim.notify("Pi send buffer: " .. (state.send_buffer and "on" or "off"), vim.log.levels.INFO)
+      refresh_after_toggle("send buffer", state.send_buffer)
     end
   end
 
   local function toggle_lsp()
     state.include_lsp = not state.include_lsp
     pi.config.include_lsp = state.include_lsp
-    update_context()
-    vim.notify("Pi LSP diagnostics: " .. (state.include_lsp and "on" or "off"), vim.log.levels.INFO)
+    refresh_after_toggle("LSP diagnostics", state.include_lsp)
   end
 
   local function attach_prompt_keymaps(buf, opts2)
@@ -227,11 +310,11 @@ function M.open(opts)
     end
   end
 
-  local function open_split(initial_lines)
+  local function open_split(initial_lines, cursor_head)
     state.mode = "split"
     close_float()
 
-    vim.cmd("botright 10split")
+    vim.cmd("botright 15split")
     state.split_win = vim.api.nvim_get_current_win()
     state.input_buf = create_prompt_buf(initial_lines)
     vim.api.nvim_win_set_buf(state.split_win, state.input_buf)
@@ -243,6 +326,9 @@ function M.open(opts)
 
     attach_prompt_keymaps(state.input_buf)
     update_context()
+    if cursor_head then
+      place_cursor(state.split_win, cursor_head)
+    end
     vim.cmd("noautocmd startinsert!")
   end
 
@@ -280,7 +366,7 @@ function M.open(opts)
     col = col,
     style = "minimal",
     border = "rounded",
-    title = " pi  (<C-e> expand) ",
+    title = " pi  (<C-e> edit full message) ",
     title_pos = "center",
     zindex = 50,
     noautocmd = true,
@@ -324,9 +410,18 @@ function M.open(opts)
 
   attach_prompt_keymaps(state.input_buf, { float = true })
 
+  -- <C-e>: expand into a split holding the *entire* message that will be sent —
+  -- the prompt plus the selection/buffer code block and the LSP diagnostics.
   vim.keymap.set({ "i", "n" }, "<C-e>", function()
-    local lines = vim.api.nvim_buf_get_lines(state.input_buf, 0, -1, false)
-    open_split(lines)
+    local prompt_text = get_prompt_text()
+    -- Always use the "has prompt" framing so the prompt stays at the top,
+    -- editable, with the context below it.
+    local frame = build_frame(state, true)
+    state.frame = frame
+    state.expanded = true
+
+    local head = frame.prefix .. prompt_text
+    open_split(vim.split(head .. frame.suffix, "\n", { plain = true }), head)
   end, { buffer = state.input_buf, noremap = true, silent = true })
 
   vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
