@@ -8,10 +8,12 @@ Bridge between [pi](https://github.com/badlogic/pi) coding agent and Neovim. Run
 
 The repo contains two components:
 
-1. **Pi extension** (`extension.ts`) — opens a unix socket when pi starts. External tools can send JSON messages to inject prompts into the active pi session.
+1. **Pi extension** (`index.ts`) — opens a unix socket when pi starts. External tools can send JSON messages to inject prompts into the active pi session.
 2. **Neovim plugin** (`lua/pi-nvim/`) — connects to that socket via libuv. Sends context from your editor to pi.
 
 Discovery is automatic: the extension writes socket info to `/tmp/pi-nvim-sockets/`, and the Neovim plugin scans that directory, preferring sessions matching your cwd.
+
+On Windows, unix sockets don't exist, so the extension binds a named pipe (`\\.\pipe\pi-nvim-*`) and writes the manifests into `%TEMP%/pi-nvim-sockets/` instead — the plugin reads the actual connect address from the manifest's `socket` field. Unix behavior is unchanged.
 
 ## Install
 

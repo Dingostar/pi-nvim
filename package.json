@@ -1,20 +1,20 @@
 {
   "name": "pi-nvim",
-  "version": "0.2.1",
+  "version": "0.2.5",
   "description": "Bridge between pi coding agent and Neovim",
   "keywords": [
     "pi-package",
     "pi-extension"
   ],
   "files": [
-    "extension.ts",
+    "index.ts",
     "package.json",
     "README.md"
   ],
   "type": "module",
   "pi": {
     "extensions": [
-      "./extension.ts"
+      "./index.ts"
     ]
   },
   "publishConfig": {
@@ -31,23 +31,23 @@
   },
   "homepage": "https://github.com/carderne/pi-nvim",
   "scripts": {
-    "fmt": "oxfmt extension.ts",
+    "fmt": "oxfmt index.ts",
     "lint": "oxlint index.ts",
     "check": "tsc --noEmit",
-    "ci:fmt": "oxfmt --check extension.ts",
+    "ci:fmt": "oxfmt --check index.ts",
     "ci:lint": "npm run lint",
     "ci:check": "npm run check"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.61.0"
+    "@earendil-works/pi-coding-agent": "^0.74.0"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-coding-agent": {
+    "@earendil-works/pi-coding-agent": {
       "optional": true
     }
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.61.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
     "@types/node": "^24",
     "oxfmt": "^0.33.0",
     "oxlint": "^1.48.0",
